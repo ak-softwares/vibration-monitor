@@ -1,15 +1,10 @@
-import { Feather, Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
-import * as Haptics from "expo-haptics";
-import { LinearGradient } from "expo-linear-gradient";
-import * as MediaLibrary from "expo-media-library";
-import { Stack } from "expo-router";
+import { Ionicons } from "@expo/vector-icons";
 import { Accelerometer } from "expo-sensors";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   Alert,
   Animated,
   Dimensions,
-  SafeAreaView,
   ScrollView,
   StatusBar,
   StyleSheet,
@@ -17,373 +12,485 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { captureRef } from "react-native-view-shot";
+import { SafeAreaView } from "react-native-safe-area-context";
+import Svg, {
+  Circle,
+  Defs,
+  G,
+  Line,
+  Path,
+  Stop,
+  LinearGradient as SvgLinearGradient,
+  Text as SvgText,
+} from "react-native-svg";
 
-const { width: SCREEN_WIDTH } = Dimensions.get("window");
-const CHART_W = SCREEN_WIDTH - 48;
-const CHART_H = 180;
-const MAX_PTS = 80;
+const { width: SW } = Dimensions.get("window");
+const CHART_W = SW - 48;
+const CHART_H = 160;
+const MAX_PTS = 1200; // 1200 pts @ 100ms = 2 minutes history
+const WARMUP_SAMPLES = 20;
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-const magnitude = (x: number, y: number, z: number) =>
-  Math.sqrt(x * x + y * y + z * z);
+
+// ─── High-Pass Filter to remove gravity ──────────────────────────────────────
+// Alpha close to 1 = more aggressive gravity removal
+// Standard value for ~100ms interval: 0.8
+const HP_ALPHA = 0.8;
+
+// ─── Vibration zones (g-force, gravity-removed) ───────────────────────────────
+const MAX_G = 1.5; // max display range after gravity removed
 
 const classify = (m: number) => {
-  if (m < 0.05) return { label: "STABLE",   color: "#00E5A0", bg: "#00E5A01A" };
-  if (m < 0.3)  return { label: "LOW",      color: "#FFD166", bg: "#FFD1661A" };
-  if (m < 0.7)  return { label: "MODERATE", color: "#FF9F43", bg: "#FF9F431A" };
-  return          { label: "HIGH",      color: "#FF4757", bg: "#FF47571A" };
+  if (m < 0.02) return { label: "STABLE",   color: "#22C55E", desc: "No vibration detected" };
+  if (m < 0.10) return { label: "LOW",      color: "#38BDF8", desc: "Minor vibration — smooth operation" };
+  if (m < 0.30) return { label: "MODERATE", color: "#FACC15", desc: "Normal running vibration" };
+  if (m < 0.60) return { label: "HIGH",     color: "#F97316", desc: "Elevated — check mountings" };
+  if (m < 1.00) return { label: "DANGER",   color: "#EF4444", desc: "High vibration — inspect immediately" };
+  return               { label: "EXTREME",  color: "#A855F7", desc: "Critical — stop vehicle/motor now!" };
 };
 
-// ─── Realtime Line Chart ──────────────────────────────────────────────────────
-const RealtimeChart = ({
-  dataX, dataY, dataZ, dataMag, activeLines,
-}: {
-  dataX: number[];
-  dataY: number[];
-  dataZ: number[];
-  dataMag: number[];
-  activeLines: { x: boolean; y: boolean; z: boolean; mag: boolean };
-}) => {
-  const allVals = [
-    ...(activeLines.x   ? dataX   : []),
-    ...(activeLines.y   ? dataY   : []),
-    ...(activeLines.z   ? dataZ   : []),
-    ...(activeLines.mag ? dataMag : []),
-  ];
-  const minV = Math.min(...allVals, -0.1);
-  const maxV = Math.max(...allVals,  0.1);
-  const range = maxV - minV || 1;
+const fmt     = (n: number) => n.toFixed(3);
+const fmtTime = (s: number) => {
+  const m   = Math.floor(s / 60).toString().padStart(2, "0");
+  const sec = (s % 60).toString().padStart(2, "0");
+  return `${m}:${sec}`;
+};
 
-  const toY = (v: number) => CHART_H - ((v - minV) / range) * (CHART_H - 20) - 10;
-  const toX = (i: number, len: number) => (i / Math.max(len - 1, 1)) * CHART_W;
+// ─── Speedometer geometry ─────────────────────────────────────────────────────
+const DIAM    = SW * 0.82;
+const CX      = DIAM / 2;
+const CY      = DIAM / 2 + 10;
+const R       = DIAM * 0.40;
+const START_A = -210;
+const END_A   = 30;
+const SWEEP   = END_A - START_A;
 
-  const renderLine = (data: number[], color: string) => {
-    if (data.length < 2) return null;
-    return data.slice(1).map((_, i) => {
-      const x1 = toX(i, data.length);
-      const y1 = toY(data[i]);
-      const x2 = toX(i + 1, data.length);
-      const y2 = toY(data[i + 1]);
-      const dx = x2 - x1;
-      const dy = y2 - y1;
-      const len = Math.sqrt(dx * dx + dy * dy);
-      const angle = (Math.atan2(dy, dx) * 180) / Math.PI;
-      return (
-        <View
-          key={i}
-          style={{
-            position: "absolute",
-            left: x1,
-            top: y1 - 1,
-            width: len,
-            height: 2,
-            backgroundColor: color,
-            transform: [{ rotate: `${angle}deg` }],
-            transformOrigin: "left center",
-            borderRadius: 1,
-          }}
-        />
-      );
-    });
-  };
+const polar = (cx: number, cy: number, r: number, deg: number) => {
+  const rad = (deg * Math.PI) / 180;
+  return { x: cx + r * Math.cos(rad), y: cy + r * Math.sin(rad) };
+};
 
-  const gridLines = [0, 0.25, 0.5, 0.75, 1].map((p) => ({
-    y: toY(minV + p * range),
-    label: (minV + p * range).toFixed(2),
-  }));
+const arcPath = (cx: number, cy: number, r: number, a1: number, a2: number) => {
+  const s = polar(cx, cy, r, a1);
+  const e = polar(cx, cy, r, a2);
+  const large = a2 - a1 > 180 ? 1 : 0;
+  return `M ${s.x} ${s.y} A ${r} ${r} 0 ${large} 1 ${e.x} ${e.y}`;
+};
+
+const valToAngle = (v: number) =>
+  START_A + (Math.min(Math.max(v, 0), MAX_G) / MAX_G) * SWEEP;
+
+// Zone arcs: [fromG, toG, color]
+const ZONES: [number, number, string][] = [
+  [0.00, 0.02, "#22C55E"],
+  [0.02, 0.10, "#38BDF8"],
+  [0.10, 0.30, "#FACC15"],
+  [0.30, 0.60, "#F97316"],
+  [0.60, 1.00, "#EF4444"],
+  [1.00, 1.50, "#A855F7"],
+];
+
+const TICKS = [0, 0.3, 0.6, 0.9, 1.2, 1.5];
+const MINOR_TICKS = [0.15, 0.45, 0.75, 1.05, 1.35];
+
+// ─── Speedometer Component ────────────────────────────────────────────────────
+const Speedometer = ({ value, maxValue }: { value: number; maxValue: number }) => {
+  const needleAnim = useRef(new Animated.Value(valToAngle(0))).current;
+  const maxAnim    = useRef(new Animated.Value(valToAngle(0))).current;
+  const [needleDeg, setNeedleDeg] = useState(valToAngle(0));
+  const [maxDeg,    setMaxDeg]    = useState(valToAngle(0));
+  const c = classify(value);
+
+  useEffect(() => {
+    Animated.spring(needleAnim, {
+      toValue: valToAngle(value),
+      useNativeDriver: false,
+      speed: 35,
+      bounciness: 1,
+    }).start();
+  }, [value]);
+
+  useEffect(() => {
+    Animated.spring(maxAnim, {
+      toValue: valToAngle(maxValue),
+      useNativeDriver: false,
+      speed: 8,
+    }).start();
+  }, [maxValue]);
+
+  useEffect(() => {
+    const id1 = needleAnim.addListener(({ value: v }) => setNeedleDeg(v));
+    const id2 = maxAnim.addListener(({ value: v }) => setMaxDeg(v));
+    return () => { needleAnim.removeListener(id1); maxAnim.removeListener(id2); };
+  }, []);
+
+  const needleTip  = polar(CX, CY, R * 0.80, needleDeg);
+  const needleBase = polar(CX, CY, R * 0.18, needleDeg + 180);
+  const maxOuter   = polar(CX, CY, R + 10, maxDeg);
+  const maxInner   = polar(CX, CY, R - 10, maxDeg);
+  const trackPath  = arcPath(CX, CY, R, START_A, END_A);
+  const fillAngle  = valToAngle(Math.max(value, 0.001));
+  const fillPath   = arcPath(CX, CY, R, START_A, fillAngle);
 
   return (
-    <View style={{ width: CHART_W, height: CHART_H + 24 }}>
-      {gridLines.map((g, i) => (
-        <View key={i} style={{ position: "absolute", top: g.y, left: 0, right: 0, flexDirection: "row", alignItems: "center" }}>
-          <View style={{ flex: 1, height: 1, backgroundColor: "#1E293B" }} />
-          <Text style={{ color: "#374151", fontSize: 9, marginLeft: 4, width: 36 }}>{g.label}</Text>
-        </View>
-      ))}
-      {activeLines.x   && renderLine(dataX,   "#FF6B9D")}
-      {activeLines.y   && renderLine(dataY,   "#4ECDC4")}
-      {activeLines.z   && renderLine(dataZ,   "#A78BFA")}
-      {activeLines.mag && renderLine(dataMag, "#00E5A0")}
-      <View style={{ position: "absolute", bottom: 0, left: 0, right: 0, flexDirection: "row", justifyContent: "space-between" }}>
-        {["–8s", "–6s", "–4s", "–2s", "now"].map((t) => (
-          <Text key={t} style={{ color: "#374151", fontSize: 9 }}>{t}</Text>
+    <View style={{ alignItems: "center", paddingTop: 20 }}>
+      <Svg
+        width={DIAM}
+        height={DIAM * 0.58}
+        viewBox={`0 0 ${DIAM} ${DIAM}`}
+        style={{ overflow: "visible" }}
+      >
+        {/* Track */}
+        <Path d={trackPath} stroke="#1E293B" strokeWidth={16} fill="none" strokeLinecap="round" />
+
+        {/* Zone ghost arcs */}
+        {ZONES.map(([from, to, color]) => (
+          <Path
+            key={color}
+            d={arcPath(CX, CY, R, valToAngle(from), valToAngle(to))}
+            stroke={color}
+            strokeWidth={16}
+            fill="none"
+            strokeLinecap="butt"
+            opacity={0.2}
+          />
         ))}
+
+        {/* Live filled arc */}
+        <Path
+          d={fillPath}
+          stroke={c.color}
+          strokeWidth={16}
+          fill="none"
+          strokeLinecap="round"
+          opacity={0.95}
+        />
+
+        {/* Major ticks + labels */}
+        {TICKS.map((t) => {
+          const a     = valToAngle(t);
+          const outer = polar(CX, CY, R + 22, a);
+          const inner = polar(CX, CY, R - 8,  a);
+          const lbl   = polar(CX, CY, R + 36, a);
+          return (
+            <G key={t}>
+              <Line x1={inner.x} y1={inner.y} x2={outer.x} y2={outer.y}
+                stroke="#64748B" strokeWidth={2} strokeLinecap="round" />
+              <SvgText x={lbl.x} y={lbl.y + 4} fontSize={11} fill="#64748B"
+                textAnchor="middle" fontWeight="600">
+                {t.toFixed(1)}
+              </SvgText>
+            </G>
+          );
+        })}
+
+        {/* Minor ticks */}
+        {MINOR_TICKS.map((t) => {
+          const a     = valToAngle(t);
+          const outer = polar(CX, CY, R + 14, a);
+          const inner = polar(CX, CY, R - 4,  a);
+          return (
+            <Line key={t} x1={inner.x} y1={inner.y} x2={outer.x} y2={outer.y}
+              stroke="#334155" strokeWidth={1.2} strokeLinecap="round" />
+          );
+        })}
+
+        {/* Peak marker */}
+        <Line x1={maxInner.x} y1={maxInner.y} x2={maxOuter.x} y2={maxOuter.y}
+          stroke="#EF4444" strokeWidth={3} strokeLinecap="round" />
+        <Circle cx={maxOuter.x} cy={maxOuter.y} r={4} fill="#EF4444" />
+
+        {/* Needle shadow */}
+        <Line
+          x1={needleBase.x + 1} y1={needleBase.y + 1}
+          x2={needleTip.x  + 1} y2={needleTip.y  + 1}
+          stroke="#00000055" strokeWidth={4} strokeLinecap="round"
+        />
+
+        {/* Needle */}
+        <Line x1={needleBase.x} y1={needleBase.y} x2={needleTip.x} y2={needleTip.y}
+          stroke={c.color} strokeWidth={3.5} strokeLinecap="round" />
+
+        {/* Hub */}
+        <Circle cx={CX} cy={CY} r={18} fill="#0B1120" stroke="#1E293B" strokeWidth={3} />
+        <Circle cx={CX} cy={CY} r={7}  fill={c.color} />
+      </Svg>
+
+      {/* Live value */}
+      <View style={styles.readingRow}>
+        <Text style={[styles.readingVal, { color: c.color }]}>{fmt(value)}</Text>
+        <Text style={styles.readingUnit}>g</Text>
       </View>
+
+      {/* PEAK + zone pill */}
+      <View style={styles.infoRow}>
+        <View style={styles.maxTag}>
+          <Text style={styles.maxTagLabel}>PEAK</Text>
+          <Text style={[styles.maxTagVal, { color: "#EF4444" }]}>{fmt(maxValue)} g</Text>
+        </View>
+        <View style={[styles.zonePill, { borderColor: c.color + "55", backgroundColor: c.color + "18" }]}>
+          <View style={[styles.zoneDot, { backgroundColor: c.color }]} />
+          <Text style={[styles.zoneText, { color: c.color }]}>{c.label}</Text>
+        </View>
+      </View>
+
+      <Text style={styles.descTxt}>{c.desc}</Text>
     </View>
   );
 };
 
-// ─── Gauge ────────────────────────────────────────────────────────────────────
-const Gauge = ({ value }: { value: number }) => {
-  const anim = useRef(new Animated.Value(0)).current;
-  const pct  = Math.min(value / 2, 1);
-  const c    = classify(value);
+// ─── Magnitude Chart ──────────────────────────────────────────────────────────
+const MagnitudeChart = ({ data }: { data: number[] }) => {
+  if (data.length < 2) {
+    return (
+      <View style={styles.chartEmpty}>
+        <Text style={styles.chartEmptyTxt}>Starting…</Text>
+      </View>
+    );
+  }
 
-  useEffect(() => {
-    Animated.spring(anim, { toValue: pct, useNativeDriver: false, speed: 22 }).start();
-  }, [pct]);
+  const maxV = Math.max(...data, 0.05);
+  const span = maxV * 1.15;
+
+  const toX = (i: number) => (i / (data.length - 1)) * CHART_W;
+  const toY = (v: number) => CHART_H - (Math.max(v, 0) / span) * CHART_H;
+
+  const pts = data
+    .map((v, i) => `${i === 0 ? "M" : "L"} ${toX(i).toFixed(1)} ${toY(v).toFixed(1)}`)
+    .join(" ");
+
+  const gridVals = [0, 0.25, 0.5, 0.75, 1.0].map((p) => ({
+    v: span * p,
+    y: toY(span * p),
+  }));
+
+  const lc = classify(data[data.length - 1]);
 
   return (
-    <View style={styles.gaugeWrap}>
-      <View style={styles.gaugeTrack} />
-      <View style={[styles.gaugeFill, { backgroundColor: c.bg }]} />
-      <View style={styles.gaugeCenter}>
-        <Text style={[styles.gaugeVal, { color: c.color }]}>{value.toFixed(3)}</Text>
-        <Text style={styles.gaugeUnit}>g  magnitude</Text>
-      </View>
-      <Animated.View
-        style={[
-          styles.gaugeDot,
-          { backgroundColor: c.color, shadowColor: c.color },
-          {
-            transform: [
-              {
-                rotate: anim.interpolate({
-                  inputRange: [0, 1],
-                  outputRange: ["-125deg", "125deg"],
-                }),
-              },
-            ],
-          },
-        ]}
+    <Svg width={CHART_W} height={CHART_H} style={{ overflow: "visible" }}>
+      <Defs>
+        <SvgLinearGradient id="cg" x1="0%" y1="0%" x2="100%" y2="0%">
+          <Stop offset="0%"   stopColor="#38BDF8" />
+          <Stop offset="50%"  stopColor="#FACC15" />
+          <Stop offset="100%" stopColor={lc.color} />
+        </SvgLinearGradient>
+      </Defs>
+      {gridVals.map((g, i) => (
+        <G key={i}>
+          <Line x1={0} y1={g.y} x2={CHART_W} y2={g.y} stroke="#1E293B" strokeWidth={1} />
+          <SvgText x={2} y={g.y - 3} fontSize={9} fill="#334155">{g.v.toFixed(2)}</SvgText>
+        </G>
+      ))}
+      <Path d={pts} stroke="url(#cg)" strokeWidth={2.5} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+      <Circle
+        cx={toX(data.length - 1)}
+        cy={toY(data[data.length - 1])}
+        r={5} fill={lc.color}
       />
-      <View style={[styles.statusBadge, { backgroundColor: c.bg, borderColor: c.color }]}>
-        <Text style={[styles.statusLabel, { color: c.color }]}>{c.label}</Text>
-      </View>
-    </View>
+    </Svg>
   );
 };
 
 // ─── Main Screen ──────────────────────────────────────────────────────────────
 export default function VibrationMeterScreen() {
   const [playing, setPlaying] = useState(false);
-  const [current, setCurrent] = useState({ x: 0, y: 0, z: 0, magnitude: 0 });
-  const [dataX,   setDataX]   = useState<number[]>([]);
-  const [dataY,   setDataY]   = useState<number[]>([]);
-  const [dataZ,   setDataZ]   = useState<number[]>([]);
-  const [dataMag, setDataMag] = useState<number[]>([]);
-  const [activeLines, setActiveLines] = useState({ x: true, y: true, z: true, mag: true });
-  const [pulseAnim] = useState(new Animated.Value(1));
-  const [dotAnim]   = useState(new Animated.Value(1));
+  const [value,   setValue]   = useState(0);
+  const [maxVal,  setMaxVal]  = useState(0);
+  const [minVal,  setMinVal]  = useState(0);
+  const [sum,     setSum]     = useState(0);
+  const [count,   setCount]   = useState(0);
+  const [data,    setData]    = useState<number[]>([]);
+  const [elapsed, setElapsed] = useState(0);
+  const [dotAnim]             = useState(new Animated.Value(1));
+  const [isCalib, setIsCalib] = useState(true);
+  
+  // High-pass filter state (stores previous raw + filtered values)
+  const hpRef = useRef({ x: 0, y: 0, z: 0, px: 0, py: 0, pz: 0 });
+  const sampleRef  = useRef(0); // counts samples for warm-up
+  const subRef   = useRef<any>(null);
+  const timerRef = useRef<any>(null);
 
-  const screenRef = useRef<View>(null);
-  const subRef    = useRef<any>(null);
+  useEffect(() => {
+    Accelerometer.isAvailableAsync().then((available) => {
+      if (!available) {
+        Alert.alert("Not supported", "This device has no accelerometer.");
+        return;
+      }
+      Accelerometer.setUpdateInterval(100);
+      startRecording();
+    });
+    return () => { subRef.current?.remove(); clearInterval(timerRef.current); };
+  }, []);
+
+  useEffect(() => {
+    Accelerometer.setUpdateInterval(100);
+    startRecording();
+    return () => {
+      subRef.current?.remove();
+      clearInterval(timerRef.current);
+    };
+  }, []);
 
   useEffect(() => {
     if (playing) {
       Animated.loop(
         Animated.sequence([
-          Animated.timing(pulseAnim, { toValue: 1.025, duration: 900, useNativeDriver: true }),
-          Animated.timing(pulseAnim, { toValue: 1,     duration: 900, useNativeDriver: true }),
-        ])
-      ).start();
-      Animated.loop(
-        Animated.sequence([
-          Animated.timing(dotAnim, { toValue: 0.15, duration: 550, useNativeDriver: true }),
-          Animated.timing(dotAnim, { toValue: 1,    duration: 550, useNativeDriver: true }),
+          Animated.timing(dotAnim, { toValue: 0.1, duration: 500, useNativeDriver: true }),
+          Animated.timing(dotAnim, { toValue: 1,   duration: 500, useNativeDriver: true }),
         ])
       ).start();
     } else {
-      pulseAnim.stopAnimation(); pulseAnim.setValue(1);
-      dotAnim.stopAnimation();   dotAnim.setValue(1);
+      dotAnim.stopAnimation();
+      dotAnim.setValue(1);
     }
   }, [playing]);
 
-  useEffect(() => {
-    Accelerometer.setUpdateInterval(100);
-    return () => subRef.current?.remove();
-  }, []);
-
-  const push = <T,>(setter: React.Dispatch<React.SetStateAction<T[]>>, val: T) =>
-    setter((prev) => [...prev.slice(-(MAX_PTS - 1)), val]);
-
-  const handlePlay = useCallback(() => {
+  const startRecording = useCallback(() => {
+    // Reset HP filter state
+    hpRef.current = { x: 0, y: 0, z: 0, px: 0, py: 0, pz: 0 };
+    setIsCalib(true);
     setPlaying(true);
+    sampleRef.current = 0;
+
     subRef.current = Accelerometer.addListener(({ x, y, z }) => {
-      const m = magnitude(x, y, z);
-      setCurrent({ x, y, z, magnitude: m });
-      push(setDataX,   x);
-      push(setDataY,   y);
-      push(setDataZ,   z);
-      push(setDataMag, m);
+      const hp = hpRef.current;
+
+      // High-pass filter: removes gravity (slow/DC component), keeps vibration (AC)
+      // filtered = alpha * (filtered + raw - prev_raw)
+      hp.x = HP_ALPHA * (hp.x + x - hp.px);
+      hp.y = HP_ALPHA * (hp.y + y - hp.py);
+      hp.z = HP_ALPHA * (hp.z + z - hp.pz);
+      hp.px = x;
+      hp.py = y;
+      hp.pz = z;
+
+      sampleRef.current += 1;
+      // Skip first WARMUP_SAMPLES — filter hasn't converged yet → avoids initial spike
+      if (sampleRef.current <= WARMUP_SAMPLES) return;
+
+      if (sampleRef.current === WARMUP_SAMPLES + 1) setIsCalib(false);
+
+      // Magnitude of filtered (gravity-free) acceleration — always 0+
+      const vib = Math.sqrt(hp.x * hp.x + hp.y * hp.y + hp.z * hp.z);
+      const v   = Math.max(0, vib);
+
+      setValue(v);
+      setMaxVal((prev) => Math.max(prev, v));
+      setMinVal((prev) => v > 0 ? (prev === 0 ? v : Math.min(prev, v)) : prev);
+      setSum((prev) => prev + v);
+      setCount((prev) => prev + 1);
+      setData((prev) => [...prev.slice(-(MAX_PTS - 1)), v]);
     });
+
+    timerRef.current = setInterval(() => setElapsed((e) => e + 1), 1000);
   }, []);
 
   const handlePause = useCallback(() => {
-    setPlaying(false);
     subRef.current?.remove();
     subRef.current = null;
+
+    clearInterval(timerRef.current);
+    timerRef.current = null;
+
+    setPlaying(false);
   }, []);
+
+  const handlePlay = useCallback(() => {
+    if (!playing) startRecording();
+  }, [playing, startRecording]);
 
   const handleReset = useCallback(() => {
     handlePause();
-    setCurrent({ x: 0, y: 0, z: 0, magnitude: 0 });
-    setDataX([]); setDataY([]); setDataZ([]); setDataMag([]);
-  }, []);
+    setValue(0);
+    setMaxVal(0);
+    setMinVal(0);
+    setSum(0);
+    setCount(0);
+    setData([]);
+    setElapsed(0);
+    setTimeout(() => startRecording(), 300);
+  }, [handlePause, startRecording]);
 
-  const takeScreenshot = useCallback(async () => {
-    try {
-      const { status } = await MediaLibrary.requestPermissionsAsync();
-      if (status !== "granted") {
-        Alert.alert("Permission Denied", "Grant media library access to save screenshots.");
-        return;
-      }
-      const uri = await captureRef(screenRef, { format: "jpg", quality: 0.95 });
-      await MediaLibrary.saveToLibraryAsync(uri);
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      Alert.alert("📸 Saved!", "Screenshot saved to your photo library.");
-    } catch {
-      Alert.alert("Error", "Could not capture screenshot.");
-    }
-  }, []);
-
-  const toggleLine = (key: keyof typeof activeLines) =>
-    setActiveLines((p) => ({ ...p, [key]: !p[key] }));
-
-  const axes = [
-    { key: "x"   as const, label: "X", value: current.x,         color: "#FF6B9D" },
-    { key: "y"   as const, label: "Y", value: current.y,         color: "#4ECDC4" },
-    { key: "z"   as const, label: "Z", value: current.z,         color: "#A78BFA" },
-    { key: "mag" as const, label: "M", value: current.magnitude, color: "#00E5A0" },
-  ];
+  const avg = count > 0 ? sum / count : 0;
 
   return (
     <SafeAreaView style={styles.safe}>
-      <Stack.Screen
-        options={{
-          headerShown: false, // ✅ hides header completely
-        }}
-      />
-      <StatusBar barStyle="light-content" backgroundColor="#070B14" />
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 24 }}>
-        <View ref={screenRef} style={styles.root} collapsable={false}>
+      <StatusBar barStyle="light-content" backgroundColor="#080D1A" />
+      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 32 }}>
+        <View style={styles.root}>
 
           {/* ── Header ── */}
           <View style={styles.header}>
             <View style={styles.headerLeft}>
-              <Animated.View style={{ opacity: dotAnim }}>
-                <View style={[styles.liveDot, { backgroundColor: playing ? "#00E5A0" : "#374151" }]} />
-              </Animated.View>
+              <Animated.View style={[styles.liveDot, { opacity: dotAnim, backgroundColor: playing ? "#EF4444" : "#334155" }]} />
               <View>
-                <Text style={styles.title}>VIBRATION METER</Text>
-                <Text style={styles.subtitle}>{playing ? "● Live Recording" : "○ Standby"}</Text>
+                <Text style={styles.title}>Vibration Meter</Text>
+                <Text style={styles.subtitle}>
+                  {isCalib
+                    ? "Calibrating…"
+                    : `${fmtTime(elapsed)} · ${playing ? "Live" : "Paused"}`
+                  }                
+                </Text>
               </View>
             </View>
-            <TouchableOpacity style={styles.camBtn} onPress={takeScreenshot}>
-              <Feather name="camera" size={17} color="#94A3B8" />
-            </TouchableOpacity>
+            <View style={styles.headerRight}>
+              <TouchableOpacity
+                style={[
+                  styles.headerBtn,
+                  playing && styles.headerBtnActive
+                ]}
+                onPress={playing ? handlePause : handlePlay}
+              >
+                <Ionicons
+                  name={playing ? "pause" : "play"}
+                  size={18}
+                  color={playing ? "#080D1A" : "#22C55E"}
+                />
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.headerBtn} onPress={handleReset}>
+                <Ionicons name="refresh" size={18} color="#64748B" />
+              </TouchableOpacity>
+            </View>
           </View>
 
-          {/* ── Gauge Card ── */}
-          <Animated.View style={[styles.card, { transform: [{ scale: pulseAnim }] }]}>
-            <LinearGradient colors={["#0F172A", "#111827"]} style={styles.cardInner} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}>
-              <Gauge value={current.magnitude} />
-            </LinearGradient>
-          </Animated.View>
+          {/* ── Dial ── */}
+          <View style={styles.dialCard}>
+            <Speedometer value={value} maxValue={maxVal} />
+          </View>
 
-          {/* ── Axis Chips ── */}
-          <View style={styles.axisRow}>
-            {axes.map((a) => (
-              <View key={a.key} style={[styles.axisChip, { borderColor: a.color + "44" }]}>
-                <View style={[styles.axisIcon, { backgroundColor: a.color + "22" }]}>
-                  <Text style={[styles.axisIconTxt, { color: a.color }]}>{a.label}</Text>
+          {/* ── MIN / AVG / MAX ── */}
+          <View style={styles.statsCard}>
+            {[
+              { label: "MIN", val: minVal, color: "#22C55E" },
+              { label: "AVG", val: avg,    color: "#94A3B8" },
+              { label: "MAX", val: maxVal, color: "#EF4444" },
+            ].map((s, i) => (
+              <React.Fragment key={s.label}>
+                {i > 0 && <View style={styles.divider} />}
+                <View style={styles.statItem}>
+                  <Text style={[styles.statVal, { color: s.color }]}>{fmt(s.val)}</Text>
+                  <Text style={styles.statLabel}>{s.label}</Text>
                 </View>
-                <Text style={[styles.axisVal, { color: a.color }]}>{a.value.toFixed(3)}</Text>
-                <Text style={styles.axisUnit}>g</Text>
-              </View>
+              </React.Fragment>
             ))}
           </View>
 
-          {/* ── Chart Card ── */}
-          <View style={styles.card}>
-            <LinearGradient colors={["#0F172A", "#0A0E1A"]} style={styles.cardInner}>
-
-              {/* Chart top bar */}
-              <View style={styles.chartHeader}>
-                <View>
-                  <Text style={styles.chartTitle}>REAL-TIME CHART</Text>
-                  <Text style={styles.chartSub}>{dataMag.length} samples · 100ms interval</Text>
-                </View>
-                <View style={styles.legendRow}>
-                  {[
-                    { key: "x"   as const, label: "X", color: "#FF6B9D" },
-                    { key: "y"   as const, label: "Y", color: "#4ECDC4" },
-                    { key: "z"   as const, label: "Z", color: "#A78BFA" },
-                    { key: "mag" as const, label: "M", color: "#00E5A0" },
-                  ].map((l) => (
-                    <TouchableOpacity
-                      key={l.key}
-                      style={[
-                        styles.legendChip,
-                        { borderColor: activeLines[l.key] ? l.color : "#1E293B" },
-                      ]}
-                      onPress={() => toggleLine(l.key)}
-                    >
-                      <View style={[styles.legendDot, { backgroundColor: activeLines[l.key] ? l.color : "#374151" }]} />
-                      <Text style={[styles.legendTxt, { color: activeLines[l.key] ? l.color : "#374151" }]}>{l.label}</Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
+          {/* ── Chart ── */}
+          <View style={styles.chartCard}>
+            <View style={styles.chartTop}>
+              <Text style={styles.chartTitle}>REAL-TIME CHART (g)</Text>
+              <View style={styles.chartBadge}>
+                <Animated.View style={[styles.chartDot, { opacity: dotAnim }]} />
+                <Text style={styles.chartBadgeTxt}>{data.length} pts</Text>
               </View>
-
-              {/* Chart area */}
-              <View style={styles.chartBox}>
-                {dataMag.length < 2 ? (
-                  <View style={styles.chartEmpty}>
-                    <MaterialCommunityIcons name="chart-line-variant" size={36} color="#1E293B" />
-                    <Text style={styles.chartEmptyTxt}>Press Play to start recording</Text>
-                  </View>
-                ) : (
-                  <RealtimeChart
-                    dataX={dataX} dataY={dataY} dataZ={dataZ} dataMag={dataMag}
-                    activeLines={activeLines}
-                  />
-                )}
-              </View>
-
-              {/* Min / Max / Avg */}
-              {dataMag.length > 1 && (
-                <View style={styles.statsRow}>
-                  {[
-                    { label: "MIN", val: Math.min(...dataMag) },
-                    { label: "MAX", val: Math.max(...dataMag) },
-                    { label: "AVG", val: dataMag.reduce((a, b) => a + b, 0) / dataMag.length },
-                  ].map((s) => (
-                    <View key={s.label} style={styles.statChip}>
-                      <Text style={styles.statLabel}>{s.label}</Text>
-                      <Text style={styles.statVal}>{s.val.toFixed(3)}</Text>
-                      <Text style={styles.statUnit}>g</Text>
-                    </View>
-                  ))}
-                </View>
-              )}
-            </LinearGradient>
-          </View>
-
-          {/* ── Controls ── */}
-          <View style={styles.controls}>
-            <TouchableOpacity
-              style={[styles.btn, playing ? styles.btnPlayActive : styles.btnPlay]}
-              onPress={handlePlay}
-              disabled={playing}
-            >
-              <Ionicons name="play" size={20} color={playing ? "#070B14" : "#00E5A0"} />
-              <Text style={[styles.btnTxt, { color: playing ? "#070B14" : "#00E5A0" }]}>Play</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[styles.btn, !playing ? styles.btnPauseActive : styles.btnPause]}
-              onPress={handlePause}
-              disabled={!playing}
-            >
-              <Ionicons name="pause" size={20} color={!playing ? "#070B14" : "#FF4757"} />
-              <Text style={[styles.btnTxt, { color: !playing ? "#070B14" : "#FF4757" }]}>Pause</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity style={[styles.btn, styles.btnReset]} onPress={handleReset}>
-              <Ionicons name="refresh" size={20} color="#94A3B8" />
-            </TouchableOpacity>
+            </View>
+            <View style={styles.chartArea}>
+              <MagnitudeChart data={data} />
+            </View>
+            <View style={styles.xAxis}>
+              {["–120s","–90s","–60s","–30s","–10s","now"].map((t) => (
+                <Text key={t} style={styles.xLabel}>{t}</Text>
+              ))}
+            </View>
           </View>
 
         </View>
@@ -394,63 +501,55 @@ export default function VibrationMeterScreen() {
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: "#070B14" },
-  root: { backgroundColor: "#070B14", padding: 16 },
+  safe: { flex: 1, backgroundColor: "#080D1A" },
+  root: { backgroundColor: "#080D1A", paddingHorizontal: 16, paddingTop: 8 },
 
-  header:     { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 14, marginTop: 40  },
+  header:     { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 },
   headerLeft: { flexDirection: "row", alignItems: "center", gap: 10 },
-  liveDot:    { width: 10, height: 10, borderRadius: 5 },
-  title:      { color: "#F1F5F9", fontSize: 17, fontWeight: "800", letterSpacing: 2.5 },
-  subtitle:   { color: "#475569", fontSize: 10, letterSpacing: 1, marginTop: 2 },
-  camBtn:     { backgroundColor: "#0F172A", padding: 10, borderRadius: 12, borderWidth: 1, borderColor: "#1E293B" },
+  headerRight:{ flexDirection: "row", alignItems: "center", gap: 6 },
+  liveDot:    { width: 10, height: 10, borderRadius: 5, marginTop: 2 },
+  title:      { color: "#F1F5F9", fontSize: 18, fontWeight: "700" },
+  subtitle:   { color: "#475569", fontSize: 11, marginTop: 2, letterSpacing: 1 },
 
-  card:      { borderRadius: 20, overflow: "hidden", marginBottom: 12, borderWidth: 1, borderColor: "#1E293B" },
-  cardInner: { padding: 20 },
+  legendCol:  { gap: 2, alignItems: "flex-start" },
+  legendItem: { flexDirection: "row", alignItems: "center", gap: 5 },
+  legendDot:  { width: 7, height: 7, borderRadius: 4 },
+  legendLabel:{ color: "#475569", fontSize: 9, fontWeight: "600" },
 
-  gaugeWrap:   { alignItems: "center", paddingVertical: 6 },
-  gaugeTrack:  { width: 150, height: 150, borderRadius: 75, borderWidth: 8, borderColor: "#1E293B", position: "absolute" },
-  gaugeFill:   { width: 134, height: 134, borderRadius: 67, position: "absolute" },
-  gaugeCenter: { alignItems: "center", justifyContent: "center", height: 150 },
-  gaugeVal:    { fontSize: 34, fontWeight: "900", letterSpacing: 1 },
-  gaugeUnit:   { color: "#475569", fontSize: 11, marginTop: 2, letterSpacing: 1 },
-  gaugeDot: {
-    position: "absolute", width: 14, height: 14, borderRadius: 7,
-    top: 8, left: 68,
-    shadowOpacity: 0.9, shadowRadius: 8, elevation: 8,
-  },
-  statusBadge: { marginTop: 12, paddingHorizontal: 16, paddingVertical: 5, borderRadius: 20, borderWidth: 1 },
-  statusLabel: { fontSize: 11, fontWeight: "800", letterSpacing: 3 },
+  dialCard:   { backgroundColor: "#0B1120", borderRadius: 24, borderWidth: 1, borderColor: "#1E293B", paddingBottom: 20, alignItems: "center", marginBottom: 12, overflow: "hidden" },
 
-  axisRow:    { flexDirection: "row", gap: 8, marginBottom: 12 },
-  axisChip:   { flex: 1, backgroundColor: "#0F172A", borderRadius: 14, padding: 10, alignItems: "center", borderWidth: 1 },
-  axisIcon:   { width: 28, height: 28, borderRadius: 8, alignItems: "center", justifyContent: "center", marginBottom: 5 },
-  axisIconTxt:{ fontSize: 13, fontWeight: "800" },
-  axisVal:    { fontSize: 13, fontWeight: "700" },
-  axisUnit:   { color: "#374151", fontSize: 9, marginTop: 1 },
+  readingRow: { flexDirection: "row", alignItems: "flex-end", gap: 5, marginTop: -15 },
+  readingVal: { fontSize: 52, fontWeight: "900", letterSpacing: 1 },
+  readingUnit:{ color: "#64748B", fontSize: 20, marginBottom: 12 },
 
-  chartHeader:{ flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14 },
-  chartTitle: { color: "#94A3B8", fontSize: 11, fontWeight: "700", letterSpacing: 2 },
-  chartSub:   { color: "#374151", fontSize: 10, marginTop: 2 },
-  legendRow:  { flexDirection: "row", gap: 5 },
-  legendChip: { flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 7, paddingVertical: 4, borderRadius: 8, borderWidth: 1 },
-  legendDot:  { width: 6, height: 6, borderRadius: 3 },
-  legendTxt:  { fontSize: 10, fontWeight: "700" },
-  chartBox:   { borderRadius: 12, backgroundColor: "#070B14", padding: 8, minHeight: CHART_H + 36 },
-  chartEmpty: { height: CHART_H, alignItems: "center", justifyContent: "center", gap: 10 },
-  chartEmptyTxt: { color: "#1E293B", fontSize: 13 },
+  infoRow:    { flexDirection: "row", gap: 10, marginTop: 4, alignItems: "center" },
+  maxTag:     { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: "#1E293B", borderRadius: 10, paddingHorizontal: 12, paddingVertical: 5 },
+  maxTagLabel:{ color: "#64748B", fontSize: 10, fontWeight: "700", letterSpacing: 1.5 },
+  maxTagVal:  { fontSize: 13, fontWeight: "700" },
+  zonePill:   { flexDirection: "row", alignItems: "center", gap: 5, borderRadius: 20, borderWidth: 1, paddingHorizontal: 10, paddingVertical: 4 },
+  zoneDot:    { width: 7, height: 7, borderRadius: 4 },
+  zoneText:   { fontSize: 11, fontWeight: "800", letterSpacing: 1 },
+  descTxt:    { color: "#475569", fontSize: 11, marginTop: 10, letterSpacing: 0.3 },
 
-  statsRow:  { flexDirection: "row", gap: 8, marginTop: 14 },
-  statChip:  { flex: 1, backgroundColor: "#070B14", borderRadius: 12, padding: 10, alignItems: "center", borderWidth: 1, borderColor: "#1E293B" },
-  statLabel: { color: "#374151", fontSize: 9, letterSpacing: 2, marginBottom: 2 },
-  statVal:   { color: "#94A3B8", fontSize: 14, fontWeight: "700" },
-  statUnit:  { color: "#374151", fontSize: 9, marginTop: 1 },
+  headerBtnActive:{ backgroundColor: "#1E293B", borderColor: "#334155" },
+  
+  statsCard:  { flexDirection: "row", backgroundColor: "#0B1120", borderRadius: 18, borderWidth: 1, borderColor: "#1E293B", paddingVertical: 16, paddingHorizontal: 8, marginBottom: 12 },
+  statItem:   { flex: 1, alignItems: "center" },
+  statVal:    { fontSize: 26, fontWeight: "800", letterSpacing: 0.5 },
+  statLabel:  { color: "#475569", fontSize: 11, fontWeight: "700", letterSpacing: 2, marginTop: 3 },
+  divider:    { width: 1, backgroundColor: "#1E293B", marginVertical: 4 },
 
-  controls:       { flexDirection: "row", gap: 10 },
-  btn:            { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 14, borderRadius: 16, borderWidth: 1 },
-  btnPlay:        { backgroundColor: "#0F172A", borderColor: "#00E5A044" },
-  btnPlayActive:  { backgroundColor: "#00E5A0", borderColor: "#00E5A0" },
-  btnPause:       { backgroundColor: "#0F172A", borderColor: "#FF475744" },
-  btnPauseActive: { backgroundColor: "#FF4757", borderColor: "#FF4757" },
-  btnReset:       { flex: 0, paddingHorizontal: 18, backgroundColor: "#0F172A", borderColor: "#1E293B" },
-  btnTxt:         { fontWeight: "700", fontSize: 14 },
+  chartCard:     { backgroundColor: "#0B1120", borderRadius: 20, borderWidth: 1, borderColor: "#1E293B", padding: 16, marginBottom: 8 },
+  chartTop:      { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 12 },
+  chartTitle:    { color: "#94A3B8", fontSize: 11, fontWeight: "700", letterSpacing: 2.5 },
+  chartBadge:    { flexDirection: "row", alignItems: "center", gap: 5, backgroundColor: "#1E293B", borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4 },
+  chartDot:      { width: 6, height: 6, borderRadius: 3, backgroundColor: "#EF4444" },
+  chartBadgeTxt: { color: "#64748B", fontSize: 10 },
+  chartArea:     { height: CHART_H, backgroundColor: "#080D1A", borderRadius: 12, overflow: "hidden", padding: 0, },
+  chartEmpty:    { height: CHART_H, alignItems: "center", justifyContent: "center" },
+  chartEmptyTxt: { color: "#334155", fontSize: 13 },
+  xAxis:         { flexDirection: "row", justifyContent: "space-between", marginTop: 8 },
+  xLabel:        { color: "#334155", fontSize: 9 },
+  headerBtn:      { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: "#0F172A", paddingHorizontal: 12, paddingVertical: 8, borderRadius: 12, borderWidth: 1, borderColor: "#1E293B" },
+  resetTxt:      { color: "#64748B", fontSize: 12, fontWeight: "600" },
 });
