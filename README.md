@@ -1,54 +1,94 @@
-<<<<<<< HEAD
-# Welcome to your Expo app 👋
+# 📳 VibroMeter
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+A modern real-time vibration monitoring app built with Expo + React Native.
 
-## Get started
+---
 
-1. Install dependencies
+## 🚀 Features
 
-   ```bash
-   npm install
-   ```
+* 📡 Real-time accelerometer data
+* 📊 Live vibration graph (2 min history)
+* 🎯 High-pass filter (removes gravity)
+* ⚡ Smooth speedometer UI
+* ⏸ Pause / Resume tracking
+* 🔄 Reset data instantly
 
-2. Start the app
+---
 
-   ```bash
-   npx expo start
-   ```
+## 📱 Tech Stack
 
-In the output, you'll find options to open the app in a
+* Expo (React Native)
+* TypeScript
+* expo-sensors (Accelerometer)
+* react-native-svg (Charts & Dial)
+* Animated API
 
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
+---
 
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
+## 🛠️ Getting Started
 
-## Get a fresh project
-
-When you're ready, run:
+### 1. Install dependencies
 
 ```bash
-npm run reset-project
+npm install
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+### 2. Start the app
 
-## Learn more
+```bash
+npx expo start
+```
 
-To learn more about developing your project with Expo, look at the following resources:
+---
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+## 📦 Run on Device
 
-## Join the community
+* Android → Press **a**
+* iOS → Press **i**
+* Expo Go → Scan QR
 
-Join our community of developers creating universal apps.
+---
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
-=======
-# vibration-monitor
->>>>>>> 500d62db57a275345c417090951cbe4ee2bdfa1f
+## 📁 Project Structure
+
+```
+app/
+ ├── (tabs)/
+ ├── vibration-meter.tsx
+ ├── components/
+ └── utils/
+```
+
+---
+
+## ⚙️ Scripts
+
+```bash
+npm start        # Start dev server
+npm run android  # Run on Android
+npm run ios      # Run on iOS
+npm run web      # Run on web
+```
+
+---
+
+## 🔥 App Name Ideas
+
+* VibroMeter
+* VibraSense
+* VibeTrack
+* PulseMeter
+
+---
+
+## 📌 Notes
+
+* Uses high-pass filter to remove gravity
+* Optimized for real-time performance
+* Works best on physical devices (not emulator)
+
+---
+
+## 👨‍💻 Author
+
+Built with ❤️ using Expo

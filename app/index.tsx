@@ -27,18 +27,31 @@ import Svg, {
 const { width: SW } = Dimensions.get("window");
 const CHART_W = SW - 48;
 const CHART_H = 160;
-const MAX_PTS = 1200; // 1200 pts @ 100ms = 2 minutes history
+const MAX_PTS = 1200;
 const WARMUP_SAMPLES = 20;
-
-
-// ─── High-Pass Filter to remove gravity ──────────────────────────────────────
-// Alpha close to 1 = more aggressive gravity removal
-// Standard value for ~100ms interval: 0.8
 const HP_ALPHA = 0.8;
+const MAX_G = 1.5;
 
-// ─── Vibration zones (g-force, gravity-removed) ───────────────────────────────
-const MAX_G = 1.5; // max display range after gravity removed
+// ─── Types ────────────────────────────────────────────────────────────────────
+interface Metrics {
+  value: number;
+  maxVal: number;
+  minVal: number;
+  avg: number;
+  count: number;
+  data: number[];
+}
 
+const DEFAULT_METRICS: Metrics = {
+  value: 0,
+  maxVal: 0,
+  minVal: 0,
+  avg: 0,
+  count: 0,
+  data: [],
+};
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 const classify = (m: number) => {
   if (m < 0.02) return { label: "STABLE",   color: "#22C55E", desc: "No vibration detected" };
   if (m < 0.10) return { label: "LOW",      color: "#38BDF8", desc: "Minor vibration — smooth operation" };
@@ -79,7 +92,6 @@ const arcPath = (cx: number, cy: number, r: number, a1: number, a2: number) => {
 const valToAngle = (v: number) =>
   START_A + (Math.min(Math.max(v, 0), MAX_G) / MAX_G) * SWEEP;
 
-// Zone arcs: [fromG, toG, color]
 const ZONES: [number, number, string][] = [
   [0.00, 0.02, "#22C55E"],
   [0.02, 0.10, "#38BDF8"],
@@ -89,11 +101,11 @@ const ZONES: [number, number, string][] = [
   [1.00, 1.50, "#A855F7"],
 ];
 
-const TICKS = [0, 0.3, 0.6, 0.9, 1.2, 1.5];
+const TICKS       = [0, 0.3, 0.6, 0.9, 1.2, 1.5];
 const MINOR_TICKS = [0.15, 0.45, 0.75, 1.05, 1.35];
 
 // ─── Speedometer Component ────────────────────────────────────────────────────
-const Speedometer = ({ value, maxValue }: { value: number; maxValue: number }) => {
+const Speedometer = React.memo(({ value, maxValue }: { value: number; maxValue: number }) => {
   const needleAnim = useRef(new Animated.Value(valToAngle(0))).current;
   const maxAnim    = useRef(new Animated.Value(valToAngle(0))).current;
   const [needleDeg, setNeedleDeg] = useState(valToAngle(0));
@@ -120,7 +132,10 @@ const Speedometer = ({ value, maxValue }: { value: number; maxValue: number }) =
   useEffect(() => {
     const id1 = needleAnim.addListener(({ value: v }) => setNeedleDeg(v));
     const id2 = maxAnim.addListener(({ value: v }) => setMaxDeg(v));
-    return () => { needleAnim.removeListener(id1); maxAnim.removeListener(id2); };
+    return () => {
+      needleAnim.removeListener(id1);
+      maxAnim.removeListener(id2);
+    };
   }, []);
 
   const needleTip  = polar(CX, CY, R * 0.80, needleDeg);
@@ -139,10 +154,8 @@ const Speedometer = ({ value, maxValue }: { value: number; maxValue: number }) =
         viewBox={`0 0 ${DIAM} ${DIAM}`}
         style={{ overflow: "visible" }}
       >
-        {/* Track */}
         <Path d={trackPath} stroke="#1E293B" strokeWidth={16} fill="none" strokeLinecap="round" />
 
-        {/* Zone ghost arcs */}
         {ZONES.map(([from, to, color]) => (
           <Path
             key={color}
@@ -155,7 +168,6 @@ const Speedometer = ({ value, maxValue }: { value: number; maxValue: number }) =
           />
         ))}
 
-        {/* Live filled arc */}
         <Path
           d={fillPath}
           stroke={c.color}
@@ -165,7 +177,6 @@ const Speedometer = ({ value, maxValue }: { value: number; maxValue: number }) =
           opacity={0.95}
         />
 
-        {/* Major ticks + labels */}
         {TICKS.map((t) => {
           const a     = valToAngle(t);
           const outer = polar(CX, CY, R + 22, a);
@@ -183,7 +194,6 @@ const Speedometer = ({ value, maxValue }: { value: number; maxValue: number }) =
           );
         })}
 
-        {/* Minor ticks */}
         {MINOR_TICKS.map((t) => {
           const a     = valToAngle(t);
           const outer = polar(CX, CY, R + 14, a);
@@ -194,34 +204,28 @@ const Speedometer = ({ value, maxValue }: { value: number; maxValue: number }) =
           );
         })}
 
-        {/* Peak marker */}
         <Line x1={maxInner.x} y1={maxInner.y} x2={maxOuter.x} y2={maxOuter.y}
           stroke="#EF4444" strokeWidth={3} strokeLinecap="round" />
         <Circle cx={maxOuter.x} cy={maxOuter.y} r={4} fill="#EF4444" />
 
-        {/* Needle shadow */}
         <Line
           x1={needleBase.x + 1} y1={needleBase.y + 1}
           x2={needleTip.x  + 1} y2={needleTip.y  + 1}
           stroke="#00000055" strokeWidth={4} strokeLinecap="round"
         />
 
-        {/* Needle */}
         <Line x1={needleBase.x} y1={needleBase.y} x2={needleTip.x} y2={needleTip.y}
           stroke={c.color} strokeWidth={3.5} strokeLinecap="round" />
 
-        {/* Hub */}
         <Circle cx={CX} cy={CY} r={18} fill="#0B1120" stroke="#1E293B" strokeWidth={3} />
         <Circle cx={CX} cy={CY} r={7}  fill={c.color} />
       </Svg>
 
-      {/* Live value */}
       <View style={styles.readingRow}>
         <Text style={[styles.readingVal, { color: c.color }]}>{fmt(value)}</Text>
         <Text style={styles.readingUnit}>g</Text>
       </View>
 
-      {/* PEAK + zone pill */}
       <View style={styles.infoRow}>
         <View style={styles.maxTag}>
           <Text style={styles.maxTagLabel}>PEAK</Text>
@@ -236,10 +240,10 @@ const Speedometer = ({ value, maxValue }: { value: number; maxValue: number }) =
       <Text style={styles.descTxt}>{c.desc}</Text>
     </View>
   );
-};
+});
 
 // ─── Magnitude Chart ──────────────────────────────────────────────────────────
-const MagnitudeChart = ({ data }: { data: number[] }) => {
+const MagnitudeChart = React.memo(({ data }: { data: number[] }) => {
   if (data.length < 2) {
     return (
       <View style={styles.chartEmpty}>
@@ -248,7 +252,8 @@ const MagnitudeChart = ({ data }: { data: number[] }) => {
     );
   }
 
-  const maxV = Math.max(...data, 0.05);
+  // FIX: use reduce instead of Math.max(...data) to avoid stack overflow on large arrays
+  const maxV = data.reduce((a, b) => Math.max(a, b), 0.05);
   const span = maxV * 1.15;
 
   const toX = (i: number) => (i / (data.length - 1)) * CHART_W;
@@ -288,27 +293,75 @@ const MagnitudeChart = ({ data }: { data: number[] }) => {
       />
     </Svg>
   );
-};
+});
 
 // ─── Main Screen ──────────────────────────────────────────────────────────────
 export default function VibrationMeterScreen() {
-  const [playing, setPlaying] = useState(false);
-  const [value,   setValue]   = useState(0);
-  const [maxVal,  setMaxVal]  = useState(0);
-  const [minVal,  setMinVal]  = useState(0);
-  const [sum,     setSum]     = useState(0);
-  const [count,   setCount]   = useState(0);
-  const [data,    setData]    = useState<number[]>([]);
-  const [elapsed, setElapsed] = useState(0);
-  const [dotAnim]             = useState(new Animated.Value(1));
-  const [isCalib, setIsCalib] = useState(true);
-  
-  // High-pass filter state (stores previous raw + filtered values)
-  const hpRef = useRef({ x: 0, y: 0, z: 0, px: 0, py: 0, pz: 0 });
-  const sampleRef  = useRef(0); // counts samples for warm-up
-  const subRef   = useRef<any>(null);
-  const timerRef = useRef<any>(null);
+  const [playing,  setPlaying]  = useState(false);
+  const [metrics,  setMetrics]  = useState<Metrics>(DEFAULT_METRICS);
+  const [elapsed,  setElapsed]  = useState(0);
+  const [isCalib,  setIsCalib]  = useState(true);
+  const [dotAnim]               = useState(new Animated.Value(1));
 
+  // HP filter state refs
+  const hpRef      = useRef({ x: 0, y: 0, z: 0, px: 0, py: 0, pz: 0 });
+  const sampleRef  = useRef(0);
+  const subRef     = useRef<any>(null);
+  const timerRef   = useRef<any>(null);
+
+  // ─── startRecording ───────────────────────────────────────────────────────
+  const startRecording = useCallback(() => {
+    // Always clean up any existing subscription before starting a new one
+    // This prevents double-subscription bugs
+    subRef.current?.remove();
+    subRef.current = null;
+    clearInterval(timerRef.current);
+    timerRef.current = null;
+
+    hpRef.current   = { x: 0, y: 0, z: 0, px: 0, py: 0, pz: 0 };
+    sampleRef.current = 0;
+    setIsCalib(true);
+    setPlaying(true);
+
+    subRef.current = Accelerometer.addListener(({ x, y, z }) => {
+      const hp = hpRef.current;
+
+      hp.x = HP_ALPHA * (hp.x + x - hp.px);
+      hp.y = HP_ALPHA * (hp.y + y - hp.py);
+      hp.z = HP_ALPHA * (hp.z + z - hp.pz);
+      hp.px = x;
+      hp.py = y;
+      hp.pz = z;
+
+      sampleRef.current += 1;
+      if (sampleRef.current <= WARMUP_SAMPLES) return;
+      if (sampleRef.current === WARMUP_SAMPLES + 1) setIsCalib(false);
+
+      const vib = Math.sqrt(hp.x * hp.x + hp.y * hp.y + hp.z * hp.z);
+      const v   = Math.max(0, vib);
+
+      // FIX: single batched state update — avoids 7 separate re-renders per tick
+      setMetrics((prev) => {
+        // FIX: Welford's online algorithm for avg — avoids float precision drift on long sessions
+        const newCount = prev.count + 1;
+        const newAvg   = prev.avg + (v - prev.avg) / newCount;
+
+        return {
+          value:  v,
+          maxVal: Math.max(prev.maxVal, v),
+          minVal: prev.count === 0 ? v : Math.min(prev.minVal, v),
+          avg:    newAvg,
+          count:  newCount,
+          data:   [...prev.data.slice(-(MAX_PTS - 1)), v],
+        };
+      });
+    });
+
+    timerRef.current = setInterval(() => setElapsed((e) => e + 1), 1000);
+  }, []);
+
+  // ─── Mount / unmount ──────────────────────────────────────────────────────
+  // FIX: single useEffect — original code had two, creating orphaned subscription on pause
   useEffect(() => {
     Accelerometer.isAvailableAsync().then((available) => {
       if (!available) {
@@ -318,18 +371,13 @@ export default function VibrationMeterScreen() {
       Accelerometer.setUpdateInterval(100);
       startRecording();
     });
-    return () => { subRef.current?.remove(); clearInterval(timerRef.current); };
-  }, []);
-
-  useEffect(() => {
-    Accelerometer.setUpdateInterval(100);
-    startRecording();
     return () => {
       subRef.current?.remove();
       clearInterval(timerRef.current);
     };
-  }, []);
+  }, [startRecording]);
 
+  // ─── Dot animation ────────────────────────────────────────────────────────
   useEffect(() => {
     if (playing) {
       Animated.loop(
@@ -344,53 +392,12 @@ export default function VibrationMeterScreen() {
     }
   }, [playing]);
 
-  const startRecording = useCallback(() => {
-    // Reset HP filter state
-    hpRef.current = { x: 0, y: 0, z: 0, px: 0, py: 0, pz: 0 };
-    setIsCalib(true);
-    setPlaying(true);
-    sampleRef.current = 0;
-
-    subRef.current = Accelerometer.addListener(({ x, y, z }) => {
-      const hp = hpRef.current;
-
-      // High-pass filter: removes gravity (slow/DC component), keeps vibration (AC)
-      // filtered = alpha * (filtered + raw - prev_raw)
-      hp.x = HP_ALPHA * (hp.x + x - hp.px);
-      hp.y = HP_ALPHA * (hp.y + y - hp.py);
-      hp.z = HP_ALPHA * (hp.z + z - hp.pz);
-      hp.px = x;
-      hp.py = y;
-      hp.pz = z;
-
-      sampleRef.current += 1;
-      // Skip first WARMUP_SAMPLES — filter hasn't converged yet → avoids initial spike
-      if (sampleRef.current <= WARMUP_SAMPLES) return;
-
-      if (sampleRef.current === WARMUP_SAMPLES + 1) setIsCalib(false);
-
-      // Magnitude of filtered (gravity-free) acceleration — always 0+
-      const vib = Math.sqrt(hp.x * hp.x + hp.y * hp.y + hp.z * hp.z);
-      const v   = Math.max(0, vib);
-
-      setValue(v);
-      setMaxVal((prev) => Math.max(prev, v));
-      setMinVal((prev) => v > 0 ? (prev === 0 ? v : Math.min(prev, v)) : prev);
-      setSum((prev) => prev + v);
-      setCount((prev) => prev + 1);
-      setData((prev) => [...prev.slice(-(MAX_PTS - 1)), v]);
-    });
-
-    timerRef.current = setInterval(() => setElapsed((e) => e + 1), 1000);
-  }, []);
-
+  // ─── Controls ─────────────────────────────────────────────────────────────
   const handlePause = useCallback(() => {
     subRef.current?.remove();
     subRef.current = null;
-
     clearInterval(timerRef.current);
     timerRef.current = null;
-
     setPlaying(false);
   }, []);
 
@@ -398,19 +405,24 @@ export default function VibrationMeterScreen() {
     if (!playing) startRecording();
   }, [playing, startRecording]);
 
+  // FIX: no more fragile setTimeout — reset state inline, then call startRecording directly
   const handleReset = useCallback(() => {
-    handlePause();
-    setValue(0);
-    setMaxVal(0);
-    setMinVal(0);
-    setSum(0);
-    setCount(0);
-    setData([]);
-    setElapsed(0);
-    setTimeout(() => startRecording(), 300);
-  }, [handlePause, startRecording]);
+    subRef.current?.remove();
+    subRef.current = null;
+    clearInterval(timerRef.current);
+    timerRef.current = null;
 
-  const avg = count > 0 ? sum / count : 0;
+    hpRef.current     = { x: 0, y: 0, z: 0, px: 0, py: 0, pz: 0 };
+    sampleRef.current = 0;
+
+    setMetrics(DEFAULT_METRICS);
+    setElapsed(0);
+    setIsCalib(true);
+
+    startRecording();
+  }, [startRecording]);
+
+  const { value, maxVal, minVal, avg, data } = metrics;
 
   return (
     <SafeAreaView style={styles.safe}>
@@ -428,16 +440,13 @@ export default function VibrationMeterScreen() {
                   {isCalib
                     ? "Calibrating…"
                     : `${fmtTime(elapsed)} · ${playing ? "Live" : "Paused"}`
-                  }                
+                  }
                 </Text>
               </View>
             </View>
             <View style={styles.headerRight}>
               <TouchableOpacity
-                style={[
-                  styles.headerBtn,
-                  playing && styles.headerBtnActive
-                ]}
+                style={[styles.headerBtn, playing && styles.headerBtnActive]}
                 onPress={playing ? handlePause : handlePlay}
               >
                 <Ionicons
@@ -504,52 +513,46 @@ const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: "#080D1A" },
   root: { backgroundColor: "#080D1A", paddingHorizontal: 16, paddingTop: 8 },
 
-  header:     { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 },
-  headerLeft: { flexDirection: "row", alignItems: "center", gap: 10 },
-  headerRight:{ flexDirection: "row", alignItems: "center", gap: 6 },
-  liveDot:    { width: 10, height: 10, borderRadius: 5, marginTop: 2 },
-  title:      { color: "#F1F5F9", fontSize: 18, fontWeight: "700" },
-  subtitle:   { color: "#475569", fontSize: 11, marginTop: 2, letterSpacing: 1 },
+  header:      { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 },
+  headerLeft:  { flexDirection: "row", alignItems: "center", gap: 10 },
+  headerRight: { flexDirection: "row", alignItems: "center", gap: 6 },
+  liveDot:     { width: 10, height: 10, borderRadius: 5, marginTop: 2 },
+  title:       { color: "#F1F5F9", fontSize: 18, fontWeight: "700" },
+  subtitle:    { color: "#475569", fontSize: 11, marginTop: 2, letterSpacing: 1 },
 
-  legendCol:  { gap: 2, alignItems: "flex-start" },
-  legendItem: { flexDirection: "row", alignItems: "center", gap: 5 },
-  legendDot:  { width: 7, height: 7, borderRadius: 4 },
-  legendLabel:{ color: "#475569", fontSize: 9, fontWeight: "600" },
+  dialCard:    { backgroundColor: "#0B1120", borderRadius: 24, borderWidth: 1, borderColor: "#1E293B", paddingBottom: 20, alignItems: "center", marginBottom: 12, overflow: "hidden" },
 
-  dialCard:   { backgroundColor: "#0B1120", borderRadius: 24, borderWidth: 1, borderColor: "#1E293B", paddingBottom: 20, alignItems: "center", marginBottom: 12, overflow: "hidden" },
+  readingRow:  { flexDirection: "row", alignItems: "flex-end", gap: 5, marginTop: -15 },
+  readingVal:  { fontSize: 52, fontWeight: "900", letterSpacing: 1 },
+  readingUnit: { color: "#64748B", fontSize: 20, marginBottom: 12 },
 
-  readingRow: { flexDirection: "row", alignItems: "flex-end", gap: 5, marginTop: -15 },
-  readingVal: { fontSize: 52, fontWeight: "900", letterSpacing: 1 },
-  readingUnit:{ color: "#64748B", fontSize: 20, marginBottom: 12 },
+  infoRow:     { flexDirection: "row", gap: 10, marginTop: 4, alignItems: "center" },
+  maxTag:      { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: "#1E293B", borderRadius: 10, paddingHorizontal: 12, paddingVertical: 5 },
+  maxTagLabel: { color: "#64748B", fontSize: 10, fontWeight: "700", letterSpacing: 1.5 },
+  maxTagVal:   { fontSize: 13, fontWeight: "700" },
+  zonePill:    { flexDirection: "row", alignItems: "center", gap: 5, borderRadius: 20, borderWidth: 1, paddingHorizontal: 10, paddingVertical: 4 },
+  zoneDot:     { width: 7, height: 7, borderRadius: 4 },
+  zoneText:    { fontSize: 11, fontWeight: "800", letterSpacing: 1 },
+  descTxt:     { color: "#475569", fontSize: 11, marginTop: 10, letterSpacing: 0.3 },
 
-  infoRow:    { flexDirection: "row", gap: 10, marginTop: 4, alignItems: "center" },
-  maxTag:     { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: "#1E293B", borderRadius: 10, paddingHorizontal: 12, paddingVertical: 5 },
-  maxTagLabel:{ color: "#64748B", fontSize: 10, fontWeight: "700", letterSpacing: 1.5 },
-  maxTagVal:  { fontSize: 13, fontWeight: "700" },
-  zonePill:   { flexDirection: "row", alignItems: "center", gap: 5, borderRadius: 20, borderWidth: 1, paddingHorizontal: 10, paddingVertical: 4 },
-  zoneDot:    { width: 7, height: 7, borderRadius: 4 },
-  zoneText:   { fontSize: 11, fontWeight: "800", letterSpacing: 1 },
-  descTxt:    { color: "#475569", fontSize: 11, marginTop: 10, letterSpacing: 0.3 },
+  headerBtn:       { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: "#0F172A", paddingHorizontal: 12, paddingVertical: 8, borderRadius: 12, borderWidth: 1, borderColor: "#1E293B" },
+  headerBtnActive: { backgroundColor: "#1E293B", borderColor: "#334155" },
 
-  headerBtnActive:{ backgroundColor: "#1E293B", borderColor: "#334155" },
-  
-  statsCard:  { flexDirection: "row", backgroundColor: "#0B1120", borderRadius: 18, borderWidth: 1, borderColor: "#1E293B", paddingVertical: 16, paddingHorizontal: 8, marginBottom: 12 },
-  statItem:   { flex: 1, alignItems: "center" },
-  statVal:    { fontSize: 26, fontWeight: "800", letterSpacing: 0.5 },
-  statLabel:  { color: "#475569", fontSize: 11, fontWeight: "700", letterSpacing: 2, marginTop: 3 },
-  divider:    { width: 1, backgroundColor: "#1E293B", marginVertical: 4 },
+  statsCard:   { flexDirection: "row", backgroundColor: "#0B1120", borderRadius: 18, borderWidth: 1, borderColor: "#1E293B", paddingVertical: 16, paddingHorizontal: 8, marginBottom: 12 },
+  statItem:    { flex: 1, alignItems: "center" },
+  statVal:     { fontSize: 26, fontWeight: "800", letterSpacing: 0.5 },
+  statLabel:   { color: "#475569", fontSize: 11, fontWeight: "700", letterSpacing: 2, marginTop: 3 },
+  divider:     { width: 1, backgroundColor: "#1E293B", marginVertical: 4 },
 
-  chartCard:     { backgroundColor: "#0B1120", borderRadius: 20, borderWidth: 1, borderColor: "#1E293B", padding: 16, marginBottom: 8 },
-  chartTop:      { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 12 },
-  chartTitle:    { color: "#94A3B8", fontSize: 11, fontWeight: "700", letterSpacing: 2.5 },
-  chartBadge:    { flexDirection: "row", alignItems: "center", gap: 5, backgroundColor: "#1E293B", borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4 },
-  chartDot:      { width: 6, height: 6, borderRadius: 3, backgroundColor: "#EF4444" },
-  chartBadgeTxt: { color: "#64748B", fontSize: 10 },
-  chartArea:     { height: CHART_H, backgroundColor: "#080D1A", borderRadius: 12, overflow: "hidden", padding: 0, },
-  chartEmpty:    { height: CHART_H, alignItems: "center", justifyContent: "center" },
-  chartEmptyTxt: { color: "#334155", fontSize: 13 },
-  xAxis:         { flexDirection: "row", justifyContent: "space-between", marginTop: 8 },
-  xLabel:        { color: "#334155", fontSize: 9 },
-  headerBtn:      { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: "#0F172A", paddingHorizontal: 12, paddingVertical: 8, borderRadius: 12, borderWidth: 1, borderColor: "#1E293B" },
-  resetTxt:      { color: "#64748B", fontSize: 12, fontWeight: "600" },
+  chartCard:      { backgroundColor: "#0B1120", borderRadius: 20, borderWidth: 1, borderColor: "#1E293B", padding: 16, marginBottom: 8 },
+  chartTop:       { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 12 },
+  chartTitle:     { color: "#94A3B8", fontSize: 11, fontWeight: "700", letterSpacing: 2.5 },
+  chartBadge:     { flexDirection: "row", alignItems: "center", gap: 5, backgroundColor: "#1E293B", borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4 },
+  chartDot:       { width: 6, height: 6, borderRadius: 3, backgroundColor: "#EF4444" },
+  chartBadgeTxt:  { color: "#64748B", fontSize: 10 },
+  chartArea:      { height: CHART_H, backgroundColor: "#080D1A", borderRadius: 12, overflow: "hidden" },
+  chartEmpty:     { height: CHART_H, alignItems: "center", justifyContent: "center" },
+  chartEmptyTxt:  { color: "#334155", fontSize: 13 },
+  xAxis:          { flexDirection: "row", justifyContent: "space-between", marginTop: 8 },
+  xLabel:         { color: "#334155", fontSize: 9 },
 });
