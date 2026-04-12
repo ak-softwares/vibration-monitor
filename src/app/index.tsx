@@ -5,7 +5,6 @@ import {
   Alert,
   Animated,
   Dimensions,
-  ScrollView,
   StatusBar,
   StyleSheet,
   Text,
@@ -23,14 +22,19 @@ import Svg, {
   LinearGradient as SvgLinearGradient,
   Text as SvgText,
 } from "react-native-svg";
+import { BottomBannerAd } from "../components/ads/BottomBannerAd";
 
-const { width: SW } = Dimensions.get("window");
+const { width: SW, height: SH } = Dimensions.get("window");
+
+// ── Responsive sizing based on both screen width and height ───────────────────
+const DIAM    = Math.min(SW * 0.80, SH * 0.38);
+const CHART_H = Math.max(90, Math.round(SH * 0.16));
 const CHART_W = SW - 48;
-const CHART_H = 160;
-const MAX_PTS = 1200;
+
+const MAX_PTS        = 1200;
 const WARMUP_SAMPLES = 20;
-const HP_ALPHA = 0.8;
-const MAX_G = 1.5;
+const HP_ALPHA       = 0.8;
+const MAX_G          = 1.5;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface Metrics {
@@ -43,12 +47,7 @@ interface Metrics {
 }
 
 const DEFAULT_METRICS: Metrics = {
-  value: 0,
-  maxVal: 0,
-  minVal: 0,
-  avg: 0,
-  count: 0,
-  data: [],
+  value: 0, maxVal: 0, minVal: 0, avg: 0, count: 0, data: [],
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -69,7 +68,6 @@ const fmtTime = (s: number) => {
 };
 
 // ─── Speedometer geometry ─────────────────────────────────────────────────────
-const DIAM    = SW * 0.82;
 const CX      = DIAM / 2;
 const CY      = DIAM / 2 + 10;
 const R       = DIAM * 0.40;
@@ -143,11 +141,10 @@ const Speedometer = React.memo(({ value, maxValue }: { value: number; maxValue: 
   const maxOuter   = polar(CX, CY, R + 10, maxDeg);
   const maxInner   = polar(CX, CY, R - 10, maxDeg);
   const trackPath  = arcPath(CX, CY, R, START_A, END_A);
-  const fillAngle  = valToAngle(Math.max(value, 0.001));
-  const fillPath   = arcPath(CX, CY, R, START_A, fillAngle);
+  const fillPath   = arcPath(CX, CY, R, START_A, valToAngle(Math.max(value, 0.001)));
 
   return (
-    <View style={{ alignItems: "center", paddingTop: 20 }}>
+    <View style={{ alignItems: "center", flex: 1, justifyContent: "center" }}>
       <Svg
         width={DIAM}
         height={DIAM * 0.58}
@@ -160,22 +157,11 @@ const Speedometer = React.memo(({ value, maxValue }: { value: number; maxValue: 
           <Path
             key={color}
             d={arcPath(CX, CY, R, valToAngle(from), valToAngle(to))}
-            stroke={color}
-            strokeWidth={16}
-            fill="none"
-            strokeLinecap="butt"
-            opacity={0.2}
+            stroke={color} strokeWidth={16} fill="none" strokeLinecap="butt" opacity={0.2}
           />
         ))}
 
-        <Path
-          d={fillPath}
-          stroke={c.color}
-          strokeWidth={16}
-          fill="none"
-          strokeLinecap="round"
-          opacity={0.95}
-        />
+        <Path d={fillPath} stroke={c.color} strokeWidth={16} fill="none" strokeLinecap="round" opacity={0.95} />
 
         {TICKS.map((t) => {
           const a     = valToAngle(t);
@@ -208,12 +194,8 @@ const Speedometer = React.memo(({ value, maxValue }: { value: number; maxValue: 
           stroke="#EF4444" strokeWidth={3} strokeLinecap="round" />
         <Circle cx={maxOuter.x} cy={maxOuter.y} r={4} fill="#EF4444" />
 
-        <Line
-          x1={needleBase.x + 1} y1={needleBase.y + 1}
-          x2={needleTip.x  + 1} y2={needleTip.y  + 1}
-          stroke="#00000055" strokeWidth={4} strokeLinecap="round"
-        />
-
+        <Line x1={needleBase.x + 1} y1={needleBase.y + 1} x2={needleTip.x + 1} y2={needleTip.y + 1}
+          stroke="#00000055" strokeWidth={4} strokeLinecap="round" />
         <Line x1={needleBase.x} y1={needleBase.y} x2={needleTip.x} y2={needleTip.y}
           stroke={c.color} strokeWidth={3.5} strokeLinecap="round" />
 
@@ -246,28 +228,20 @@ const Speedometer = React.memo(({ value, maxValue }: { value: number; maxValue: 
 const MagnitudeChart = React.memo(({ data }: { data: number[] }) => {
   if (data.length < 2) {
     return (
-      <View style={styles.chartEmpty}>
+      <View style={[styles.chartEmpty, { height: CHART_H }]}>
         <Text style={styles.chartEmptyTxt}>Starting…</Text>
       </View>
     );
   }
 
-  // FIX: use reduce instead of Math.max(...data) to avoid stack overflow on large arrays
   const maxV = data.reduce((a, b) => Math.max(a, b), 0.05);
   const span = maxV * 1.15;
-
-  const toX = (i: number) => (i / (data.length - 1)) * CHART_W;
-  const toY = (v: number) => CHART_H - (Math.max(v, 0) / span) * CHART_H;
-
-  const pts = data
+  const toX  = (i: number) => (i / (data.length - 1)) * CHART_W;
+  const toY  = (v: number) => CHART_H - (Math.max(v, 0) / span) * CHART_H;
+  const pts  = data
     .map((v, i) => `${i === 0 ? "M" : "L"} ${toX(i).toFixed(1)} ${toY(v).toFixed(1)}`)
     .join(" ");
-
-  const gridVals = [0, 0.25, 0.5, 0.75, 1.0].map((p) => ({
-    v: span * p,
-    y: toY(span * p),
-  }));
-
+  const gridVals = [0, 0.25, 0.5, 0.75, 1.0].map((p) => ({ v: span * p, y: toY(span * p) }));
   const lc = classify(data[data.length - 1]);
 
   return (
@@ -286,66 +260,51 @@ const MagnitudeChart = React.memo(({ data }: { data: number[] }) => {
         </G>
       ))}
       <Path d={pts} stroke="url(#cg)" strokeWidth={2.5} fill="none" strokeLinecap="round" strokeLinejoin="round" />
-      <Circle
-        cx={toX(data.length - 1)}
-        cy={toY(data[data.length - 1])}
-        r={5} fill={lc.color}
-      />
+      <Circle cx={toX(data.length - 1)} cy={toY(data[data.length - 1])} r={5} fill={lc.color} />
     </Svg>
   );
 });
 
 // ─── Main Screen ──────────────────────────────────────────────────────────────
 export default function VibrationMeterScreen() {
-  const [playing,  setPlaying]  = useState(false);
-  const [metrics,  setMetrics]  = useState<Metrics>(DEFAULT_METRICS);
-  const [elapsed,  setElapsed]  = useState(0);
-  const [isCalib,  setIsCalib]  = useState(true);
-  const [dotAnim]               = useState(new Animated.Value(1));
+  const [playing, setPlaying] = useState(false);
+  const [metrics, setMetrics] = useState<Metrics>(DEFAULT_METRICS);
+  const [elapsed, setElapsed] = useState(0);
+  const [isCalib, setIsCalib] = useState(true);
+  const [dotAnim]             = useState(new Animated.Value(1));
 
-  // HP filter state refs
-  const hpRef      = useRef({ x: 0, y: 0, z: 0, px: 0, py: 0, pz: 0 });
-  const sampleRef  = useRef(0);
-  const subRef     = useRef<any>(null);
-  const timerRef   = useRef<any>(null);
+  const hpRef     = useRef({ x: 0, y: 0, z: 0, px: 0, py: 0, pz: 0 });
+  const sampleRef = useRef(0);
+  const subRef    = useRef<any>(null);
+  const timerRef  = useRef<any>(null);
 
-  // ─── startRecording ───────────────────────────────────────────────────────
   const startRecording = useCallback(() => {
-    // Always clean up any existing subscription before starting a new one
-    // This prevents double-subscription bugs
     subRef.current?.remove();
     subRef.current = null;
     clearInterval(timerRef.current);
     timerRef.current = null;
 
-    hpRef.current   = { x: 0, y: 0, z: 0, px: 0, py: 0, pz: 0 };
+    hpRef.current     = { x: 0, y: 0, z: 0, px: 0, py: 0, pz: 0 };
     sampleRef.current = 0;
     setIsCalib(true);
     setPlaying(true);
 
     subRef.current = Accelerometer.addListener(({ x, y, z }) => {
       const hp = hpRef.current;
-
       hp.x = HP_ALPHA * (hp.x + x - hp.px);
       hp.y = HP_ALPHA * (hp.y + y - hp.py);
       hp.z = HP_ALPHA * (hp.z + z - hp.pz);
-      hp.px = x;
-      hp.py = y;
-      hp.pz = z;
+      hp.px = x; hp.py = y; hp.pz = z;
 
       sampleRef.current += 1;
       if (sampleRef.current <= WARMUP_SAMPLES) return;
       if (sampleRef.current === WARMUP_SAMPLES + 1) setIsCalib(false);
 
-      const vib = Math.sqrt(hp.x * hp.x + hp.y * hp.y + hp.z * hp.z);
-      const v   = Math.max(0, vib);
+      const v = Math.max(0, Math.sqrt(hp.x * hp.x + hp.y * hp.y + hp.z * hp.z));
 
-      // FIX: single batched state update — avoids 7 separate re-renders per tick
       setMetrics((prev) => {
-        // FIX: Welford's online algorithm for avg — avoids float precision drift on long sessions
         const newCount = prev.count + 1;
         const newAvg   = prev.avg + (v - prev.avg) / newCount;
-
         return {
           value:  v,
           maxVal: Math.max(prev.maxVal, v),
@@ -360,8 +319,6 @@ export default function VibrationMeterScreen() {
     timerRef.current = setInterval(() => setElapsed((e) => e + 1), 1000);
   }, []);
 
-  // ─── Mount / unmount ──────────────────────────────────────────────────────
-  // FIX: single useEffect — original code had two, creating orphaned subscription on pause
   useEffect(() => {
     Accelerometer.isAvailableAsync().then((available) => {
       if (!available) {
@@ -377,7 +334,6 @@ export default function VibrationMeterScreen() {
     };
   }, [startRecording]);
 
-  // ─── Dot animation ────────────────────────────────────────────────────────
   useEffect(() => {
     if (playing) {
       Animated.loop(
@@ -392,7 +348,6 @@ export default function VibrationMeterScreen() {
     }
   }, [playing]);
 
-  // ─── Controls ─────────────────────────────────────────────────────────────
   const handlePause = useCallback(() => {
     subRef.current?.remove();
     subRef.current = null;
@@ -401,24 +356,18 @@ export default function VibrationMeterScreen() {
     setPlaying(false);
   }, []);
 
-  const handlePlay = useCallback(() => {
-    if (!playing) startRecording();
-  }, [playing, startRecording]);
+  const handlePlay  = useCallback(() => { if (!playing) startRecording(); }, [playing, startRecording]);
 
-  // FIX: no more fragile setTimeout — reset state inline, then call startRecording directly
   const handleReset = useCallback(() => {
     subRef.current?.remove();
     subRef.current = null;
     clearInterval(timerRef.current);
     timerRef.current = null;
-
     hpRef.current     = { x: 0, y: 0, z: 0, px: 0, py: 0, pz: 0 };
     sampleRef.current = 0;
-
     setMetrics(DEFAULT_METRICS);
     setElapsed(0);
     setIsCalib(true);
-
     startRecording();
   }, [startRecording]);
 
@@ -427,105 +376,105 @@ export default function VibrationMeterScreen() {
   return (
     <SafeAreaView style={styles.safe}>
       <StatusBar barStyle="light-content" backgroundColor="#080D1A" />
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 32 }}>
-        <View style={styles.root}>
 
-          {/* ── Header ── */}
-          <View style={styles.header}>
-            <View style={styles.headerLeft}>
-              <Animated.View style={[styles.liveDot, { opacity: dotAnim, backgroundColor: playing ? "#EF4444" : "#334155" }]} />
-              <View>
-                <Text style={styles.title}>Vibration Meter</Text>
-                <Text style={styles.subtitle}>
-                  {isCalib
-                    ? "Calibrating…"
-                    : `${fmtTime(elapsed)} · ${playing ? "Live" : "Paused"}`
-                  }
-                </Text>
+      {/* ── All content fills the space above the banner ── */}
+      <View style={styles.content}>
+
+        {/* Header */}
+        <View style={styles.header}>
+          <View style={styles.headerLeft}>
+            <Animated.View style={[styles.liveDot, { opacity: dotAnim, backgroundColor: playing ? "#EF4444" : "#334155" }]} />
+            <View>
+              <Text style={styles.title}>Vibration Meter</Text>
+              <Text style={styles.subtitle}>
+                {isCalib ? "Calibrating…" : `${fmtTime(elapsed)} · ${playing ? "Live" : "Paused"}`}
+              </Text>
+            </View>
+          </View>
+          <View style={styles.headerRight}>
+            <TouchableOpacity
+              style={[styles.headerBtn, playing && styles.headerBtnActive]}
+              onPress={playing ? handlePause : handlePlay}
+            >
+              <Ionicons name={playing ? "pause" : "play"} size={18} color={playing ? "#080D1A" : "#22C55E"} />
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.headerBtn} onPress={handleReset}>
+              <Ionicons name="refresh" size={18} color="#64748B" />
+            </TouchableOpacity>
+          </View>
+        </View>
+
+        {/* Dial — flex:1 grows to fill remaining vertical space */}
+        <View style={styles.dialCard}>
+          <Speedometer value={value} maxValue={maxVal} />
+        </View>
+
+        {/* MIN / AVG / MAX */}
+        <View style={styles.statsCard}>
+          {[
+            { label: "MIN", val: minVal, color: "#22C55E" },
+            { label: "AVG", val: avg,    color: "#94A3B8" },
+            { label: "MAX", val: maxVal, color: "#EF4444" },
+          ].map((s, i) => (
+            <React.Fragment key={s.label}>
+              {i > 0 && <View style={styles.divider} />}
+              <View style={styles.statItem}>
+                <Text style={[styles.statVal, { color: s.color }]}>{fmt(s.val)}</Text>
+                <Text style={styles.statLabel}>{s.label}</Text>
               </View>
-            </View>
-            <View style={styles.headerRight}>
-              <TouchableOpacity
-                style={[styles.headerBtn, playing && styles.headerBtnActive]}
-                onPress={playing ? handlePause : handlePlay}
-              >
-                <Ionicons
-                  name={playing ? "pause" : "play"}
-                  size={18}
-                  color={playing ? "#080D1A" : "#22C55E"}
-                />
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.headerBtn} onPress={handleReset}>
-                <Ionicons name="refresh" size={18} color="#64748B" />
-              </TouchableOpacity>
+            </React.Fragment>
+          ))}
+        </View>
+
+        {/* Chart */}
+        <View style={styles.chartCard}>
+          <View style={styles.chartTop}>
+            <Text style={styles.chartTitle}>REAL-TIME CHART (g)</Text>
+            <View style={styles.chartBadge}>
+              <Animated.View style={[styles.chartDot, { opacity: dotAnim }]} />
+              <Text style={styles.chartBadgeTxt}>{data.length} pts</Text>
             </View>
           </View>
-
-          {/* ── Dial ── */}
-          <View style={styles.dialCard}>
-            <Speedometer value={value} maxValue={maxVal} />
+          <View style={styles.chartArea}>
+            <MagnitudeChart data={data} />
           </View>
-
-          {/* ── MIN / AVG / MAX ── */}
-          <View style={styles.statsCard}>
-            {[
-              { label: "MIN", val: minVal, color: "#22C55E" },
-              { label: "AVG", val: avg,    color: "#94A3B8" },
-              { label: "MAX", val: maxVal, color: "#EF4444" },
-            ].map((s, i) => (
-              <React.Fragment key={s.label}>
-                {i > 0 && <View style={styles.divider} />}
-                <View style={styles.statItem}>
-                  <Text style={[styles.statVal, { color: s.color }]}>{fmt(s.val)}</Text>
-                  <Text style={styles.statLabel}>{s.label}</Text>
-                </View>
-              </React.Fragment>
+          <View style={styles.xAxis}>
+            {["–120s", "–90s", "–60s", "–30s", "–10s", "now"].map((t) => (
+              <Text key={t} style={styles.xLabel}>{t}</Text>
             ))}
           </View>
-
-          {/* ── Chart ── */}
-          <View style={styles.chartCard}>
-            <View style={styles.chartTop}>
-              <Text style={styles.chartTitle}>REAL-TIME CHART (g)</Text>
-              <View style={styles.chartBadge}>
-                <Animated.View style={[styles.chartDot, { opacity: dotAnim }]} />
-                <Text style={styles.chartBadgeTxt}>{data.length} pts</Text>
-              </View>
-            </View>
-            <View style={styles.chartArea}>
-              <MagnitudeChart data={data} />
-            </View>
-            <View style={styles.xAxis}>
-              {["–120s","–90s","–60s","–30s","–10s","now"].map((t) => (
-                <Text key={t} style={styles.xLabel}>{t}</Text>
-              ))}
-            </View>
-          </View>
-
         </View>
-      </ScrollView>
+
+      </View>
+
+      {/* Banner ad always at the bottom */}
+      <BottomBannerAd />
     </SafeAreaView>
   );
 }
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: "#080D1A" },
-  root: { backgroundColor: "#080D1A", paddingHorizontal: 16, paddingTop: 8 },
+  safe:    { flex: 1, backgroundColor: "#080D1A" },
 
-  header:      { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 },
-  headerLeft:  { flexDirection: "row", alignItems: "center", gap: 10 },
-  headerRight: { flexDirection: "row", alignItems: "center", gap: 6 },
-  liveDot:     { width: 10, height: 10, borderRadius: 5, marginTop: 2 },
-  title:       { color: "#F1F5F9", fontSize: 18, fontWeight: "700" },
-  subtitle:    { color: "#475569", fontSize: 11, marginTop: 2, letterSpacing: 1 },
+  // flex:1 fills everything between SafeAreaView top and the banner ad
+  content: { flex: 1, paddingHorizontal: 10, paddingTop: 8, paddingBottom: 4 },
 
-  dialCard:    { backgroundColor: "#0B1120", borderRadius: 24, borderWidth: 1, borderColor: "#1E293B", paddingBottom: 20, alignItems: "center", marginBottom: 12, overflow: "hidden" },
+  // Header
+  header:          { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 },
+  headerLeft:      { flexDirection: "row", alignItems: "center", gap: 10 },
+  headerRight:     { flexDirection: "row", alignItems: "center", gap: 6 },
+  liveDot:         { width: 10, height: 10, borderRadius: 5, marginTop: 2 },
+  title:           { color: "#F1F5F9", fontSize: 18, fontWeight: "700" },
+  subtitle:        { color: "#475569", fontSize: 11, marginTop: 2, letterSpacing: 1 },
+  headerBtn:       { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: "#0F172A", paddingHorizontal: 12, paddingVertical: 8, borderRadius: 12, borderWidth: 1, borderColor: "#1E293B" },
+  headerBtnActive: { backgroundColor: "#1E293B", borderColor: "#334155" },
 
-  readingRow:  { flexDirection: "row", alignItems: "flex-end", gap: 5, marginTop: -15 },
+  // Dial card grows to fill all leftover vertical space
+  dialCard:    { flex: 1, backgroundColor: "#0B1120", borderRadius: 24, borderWidth: 1, borderColor: "#1E293B", alignItems: "center", justifyContent: "center", marginBottom: 8, overflow: "hidden" },
+  readingRow:  { flexDirection: "row", alignItems: "flex-end", gap: 5, marginTop: -12 },
   readingVal:  { fontSize: 52, fontWeight: "900", letterSpacing: 1 },
   readingUnit: { color: "#64748B", fontSize: 20, marginBottom: 12 },
-
   infoRow:     { flexDirection: "row", gap: 10, marginTop: 4, alignItems: "center" },
   maxTag:      { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: "#1E293B", borderRadius: 10, paddingHorizontal: 12, paddingVertical: 5 },
   maxTagLabel: { color: "#64748B", fontSize: 10, fontWeight: "700", letterSpacing: 1.5 },
@@ -533,26 +482,25 @@ const styles = StyleSheet.create({
   zonePill:    { flexDirection: "row", alignItems: "center", gap: 5, borderRadius: 20, borderWidth: 1, paddingHorizontal: 10, paddingVertical: 4 },
   zoneDot:     { width: 7, height: 7, borderRadius: 4 },
   zoneText:    { fontSize: 11, fontWeight: "800", letterSpacing: 1 },
-  descTxt:     { color: "#475569", fontSize: 11, marginTop: 10, letterSpacing: 0.3 },
+  descTxt:     { color: "#475569", fontSize: 11, marginTop: 8, letterSpacing: 0.3 },
 
-  headerBtn:       { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: "#0F172A", paddingHorizontal: 12, paddingVertical: 8, borderRadius: 12, borderWidth: 1, borderColor: "#1E293B" },
-  headerBtnActive: { backgroundColor: "#1E293B", borderColor: "#334155" },
+  // Stats (fixed height)
+  statsCard:  { flexDirection: "row", backgroundColor: "#0B1120", borderRadius: 18, borderWidth: 1, borderColor: "#1E293B", paddingVertical: 16, paddingHorizontal: 8, marginBottom: 8 },
+  statItem:   { flex: 1, alignItems: "center" },
+  statVal:    { fontSize: 26, fontWeight: "800", letterSpacing: 0.5 },
+  statLabel:  { color: "#475569", fontSize: 11, fontWeight: "700", letterSpacing: 2, marginTop: 3 },
+  divider:    { width: 1, backgroundColor: "#1E293B", marginVertical: 4 },
 
-  statsCard:   { flexDirection: "row", backgroundColor: "#0B1120", borderRadius: 18, borderWidth: 1, borderColor: "#1E293B", paddingVertical: 16, paddingHorizontal: 8, marginBottom: 12 },
-  statItem:    { flex: 1, alignItems: "center" },
-  statVal:     { fontSize: 26, fontWeight: "800", letterSpacing: 0.5 },
-  statLabel:   { color: "#475569", fontSize: 11, fontWeight: "700", letterSpacing: 2, marginTop: 3 },
-  divider:     { width: 1, backgroundColor: "#1E293B", marginVertical: 4 },
-
-  chartCard:      { backgroundColor: "#0B1120", borderRadius: 20, borderWidth: 1, borderColor: "#1E293B", padding: 16, marginBottom: 8 },
-  chartTop:       { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 12 },
-  chartTitle:     { color: "#94A3B8", fontSize: 11, fontWeight: "700", letterSpacing: 2.5 },
-  chartBadge:     { flexDirection: "row", alignItems: "center", gap: 5, backgroundColor: "#1E293B", borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4 },
-  chartDot:       { width: 6, height: 6, borderRadius: 3, backgroundColor: "#EF4444" },
-  chartBadgeTxt:  { color: "#64748B", fontSize: 10 },
-  chartArea:      { height: CHART_H, backgroundColor: "#080D1A", borderRadius: 12, overflow: "hidden" },
-  chartEmpty:     { height: CHART_H, alignItems: "center", justifyContent: "center" },
-  chartEmptyTxt:  { color: "#334155", fontSize: 13 },
-  xAxis:          { flexDirection: "row", justifyContent: "space-between", marginTop: 8 },
-  xLabel:         { color: "#334155", fontSize: 9 },
+  // Chart (fixed height driven by CHART_H constant)
+  chartCard:     { backgroundColor: "#0B1120", borderRadius: 20, borderWidth: 1, borderColor: "#1E293B", padding: 14 },
+  chartTop:      { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 10 },
+  chartTitle:    { color: "#94A3B8", fontSize: 11, fontWeight: "700", letterSpacing: 2.5 },
+  chartBadge:    { flexDirection: "row", alignItems: "center", gap: 5, backgroundColor: "#1E293B", borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4 },
+  chartDot:      { width: 6, height: 6, borderRadius: 3, backgroundColor: "#EF4444" },
+  chartBadgeTxt: { color: "#64748B", fontSize: 10 },
+  chartArea:     { height: CHART_H, backgroundColor: "#080D1A", borderRadius: 12, overflow: "hidden" },
+  chartEmpty:    { alignItems: "center", justifyContent: "center" },
+  chartEmptyTxt: { color: "#334155", fontSize: 13 },
+  xAxis:         { flexDirection: "row", justifyContent: "space-between", marginTop: 8 },
+  xLabel:        { color: "#334155", fontSize: 9 },
 });
